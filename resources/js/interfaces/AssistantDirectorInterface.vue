@@ -179,7 +179,7 @@ export default {
                             hiddenOnCollapse: true,
                         },
                         ...dataTable.value.departments.map((department) => ({
-                            title: `[${department.titleRight}] ${department.titleLeft}`,
+                            title: `[${department.titleRight} ч.] ${department.titleLeft}`,
                             items: department.department_loads,
                             href: "/assistantDirector/" + count++,
                             department_id: department.id.value,
