@@ -66,7 +66,7 @@
 import { computed, inject, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import ResultTable from "../components/ResultTable.vue";
-import { buildTeacherRows, reportColumns } from "../utils/teacherReport";
+import { buildTeacherSemesterRows, reportColumns } from "../utils/teacherReport";
 
 const route = useRoute();
 const router = useRouter();
@@ -97,7 +97,7 @@ const selectedYear = computed(() => years.value[selectedIndex.value]);
 const semesters = computed(() => Object.values(selectedYear.value?.items ?? {}));
 const semesterReports = computed(() => semesters.value.map((semester) => ({
     semester,
-    rows: buildTeacherRows([semester], { compact: true }),
+    rows: buildTeacherSemesterRows(semester),
 })));
 
 function selectYear(event) {
@@ -126,13 +126,13 @@ async function load() {
 
 async function downloadReport() {
     if (exporting.value || !selectedYear.value || !semesters.value.length) return;
-    const rows = buildTeacherRows(semesters.value);
+    const reportSemesters = semesters.value;
     const year = selectedYear.value.name;
     exporting.value = true;
     actionError.value = "";
     try {
         const { createTeacherWorkbook } = await import("../utils/teacherWorkbook");
-        const file = await createTeacherWorkbook(rows, accountName.value);
+        const file = await createTeacherWorkbook(reportSemesters, accountName.value);
         const url = URL.createObjectURL(file);
         const link = document.createElement("a");
         link.href = url;

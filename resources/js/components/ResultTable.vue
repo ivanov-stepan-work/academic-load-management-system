@@ -75,8 +75,13 @@ export default {
 
 .teacher-results thead th:last-child,
 .teacher-results td:last-child:not([colspan="3"]) {
+    white-space: nowrap;
     text-align: end;
     font-variant-numeric: tabular-nums;
+}
+
+.teacher-results thead th:last-child {
+    min-width: 5rem;
 }
 
 .report-heading.report-active,

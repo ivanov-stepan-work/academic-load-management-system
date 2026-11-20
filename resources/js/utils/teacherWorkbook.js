@@ -1,5 +1,5 @@
 import ExcelJS from "exceljs/dist/exceljs.min.js";
-import { reportColumns } from "./teacherReport.js";
+import { buildTeacherSemesterRows, reportColumns } from "./teacherReport.js";
 
 const mimeType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
@@ -14,13 +14,29 @@ function worksheetName(teacherName) {
     return name && name.toLowerCase() !== "history" ? name : "Учебная нагрузка";
 }
 
-export async function createTeacherWorkbook(rows, teacherName) {
+function semesterRows(semester) {
+    const summary = [
+        ["Всего часов за полугодие", semester.total_hours],
+        ["Часов в неделю", semester.total_hours_per_week],
+    ].map(([label, hours]) => [
+        { name: label, width: 2, bold: true },
+        { name: Number(hours), bold: true },
+    ]);
+    return [
+        [{ name: semester.name, width: 3, bold: true }],
+        ...summary,
+        reportColumns.map(({ label }) => ({ name: label, bold: true })),
+        ...buildTeacherSemesterRows(semester),
+        [],
+    ];
+}
+
+export async function createTeacherWorkbook(semesters, teacherName) {
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet(worksheetName(teacherName));
-    sheet.columns = reportColumns.map(({ percent }) => ({ width: percent }));
-    const header = reportColumns.map(({ label }) => ({ name: label, bold: true }));
+    sheet.columns = [{ width: 60 }, { width: 24 }, { width: 14 }];
 
-    [header, ...rows].forEach((row, index) => {
+    semesters.flatMap(semesterRows).forEach((row, index) => {
         const rowNumber = index + 1;
         let column = 1;
         for (const item of row) {

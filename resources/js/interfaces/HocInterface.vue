@@ -92,7 +92,7 @@
                                 <tr>
                                     <th scope="col">Содержание нагрузки</th>
                                     <th scope="col" class="text-end">Часы</th>
-                                    <th scope="col" class="text-end">Часов в неделю</th>
+                                    <th scope="col" class="text-end hoc-weekly-hours">Часов в неделю</th>
                                     <th scope="col"><span class="visually-hidden">Действия</span></th>
                                 </tr>
                             </thead>
@@ -825,6 +825,11 @@ onBeforeUnmount(() => {
     width: 100%;
     font-weight: 600;
     overflow-wrap: anywhere;
+}
+
+.hoc-table .hoc-weekly-hours {
+    min-width: 10rem;
+    white-space: nowrap;
 }
 
 .hoc-table td {
