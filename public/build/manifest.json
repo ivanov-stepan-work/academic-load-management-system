@@ -1,0 +1,28 @@
+{
+  "resources/js/app.js": {
+    "file": "assets/app-fY0gd4tq.js",
+    "name": "app",
+    "src": "resources/js/app.js",
+    "isEntry": true,
+    "dynamicImports": [
+      "resources/js/utils/teacherWorkbook.js"
+    ],
+    "css": [
+      "assets/app-CKGk56Sl.css"
+    ]
+  },
+  "resources/js/utils/teacherWorkbook.js": {
+    "file": "assets/teacherWorkbook-CRn6WwPV.js",
+    "name": "teacherWorkbook",
+    "src": "resources/js/utils/teacherWorkbook.js",
+    "isDynamicEntry": true,
+    "imports": [
+      "resources/js/app.js"
+    ]
+  },
+  "resources/sass/app.scss": {
+    "file": "assets/app-CLzQMkOK.css",
+    "src": "resources/sass/app.scss",
+    "isEntry": true
+  }
+}
