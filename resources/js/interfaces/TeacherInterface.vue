@@ -1,378 +1,285 @@
 <template>
-    <div class="d-flex w-100">
-        <Sidebar
-            ref="sidebar"
-            @menuItemClick="tableDisplay"
-            :items="sideBarItems"
-        />
-        <Table
-            :rows="tableArray"
-            ref="table"
-            :style="{ marginLeft: sidebarWidth + 'px' }"
-        />
-        <div class="flex-grow-1"></div>
-    </div>
+    <main class="teacher-page">
+        <div class="teacher-layout">
+            <header class="teacher-header">
+                <div>
+                    <p class="teacher-role">Кабинет преподавателя</p>
+                    <h1>Учебная нагрузка</h1>
+                </div>
+                <div class="teacher-account">
+                    <strong v-if="accountName">{{ accountName }}</strong>
+                    <button class="btn btn-outline-secondary" type="button" :disabled="signingOut" @click="logout">
+                        {{ signingOut ? "Выход…" : "Выйти" }}
+                    </button>
+                </div>
+            </header>
+
+            <p v-if="actionError" class="alert alert-danger mb-0" role="alert">{{ actionError }}</p>
+            <section v-if="loading" class="teacher-card teacher-empty" role="status">Загружаем учебную нагрузку…</section>
+            <section v-else-if="loadError" class="teacher-card teacher-empty">
+                <p role="alert">Не удалось загрузить учебную нагрузку.</p>
+                <button class="btn btn-outline-primary" type="button" @click="load">Повторить</button>
+            </section>
+            <section v-else-if="!years.length" class="teacher-card teacher-empty">Учебные годы пока не добавлены.</section>
+            <template v-else>
+                <section class="teacher-card teacher-toolbar" aria-label="Параметры отчёта">
+                    <div>
+                        <label for="teacher-year" class="form-label fw-semibold">Учебный год</label>
+                        <select id="teacher-year" class="form-select" :value="selectedIndex ?? ''" @change="selectYear">
+                            <option v-if="selectedIndex == null" value="" disabled>Выберите учебный год</option>
+                            <option v-for="year in yearOptions" :key="year.id" :value="year.index">{{ year.name }}</option>
+                        </select>
+                    </div>
+                    <button class="btn btn-primary" type="button" :disabled="!semesters.length || exporting" @click="downloadReport">
+                        {{ exporting ? "Готовим файл…" : "Скачать Excel (.xlsx)" }}
+                    </button>
+                </section>
+
+                <section v-if="selectedYear" class="teacher-year-report" aria-labelledby="teacher-report-title">
+                    <h2 id="teacher-report-title">Нагрузка за {{ selectedYear.name }} учебный год</h2>
+                    <div v-if="semesterReports.length" class="teacher-semesters">
+                        <section v-for="{ semester, rows } in semesterReports" :key="semester.value"
+                            class="teacher-card teacher-report" :aria-labelledby="'teacher-semester-' + semester.value">
+                            <header class="teacher-report-header">
+                                <h3 :id="'teacher-semester-' + semester.value">{{ semester.name }}</h3>
+                                <p class="teacher-summary">
+                                    <strong>{{ formatNumber(semester.total_hours) }} ч</strong>
+                                    <span>{{ formatNumber(semester.total_hours_per_week) }} ч/нед.</span>
+                                </p>
+                            </header>
+                            <div v-if="rows.length" class="table-responsive" role="region"
+                                :aria-labelledby="'teacher-semester-' + semester.value" tabindex="0">
+                                <ResultTable :columns="reportColumns" :rows="rows" />
+                            </div>
+                            <p v-else class="teacher-muted teacher-empty mb-0">В этом полугодии пока нет разделов нагрузки.</p>
+                        </section>
+                    </div>
+                    <p v-else class="teacher-card teacher-empty mb-0">На этот учебный год нагрузка пока не назначена.</p>
+                </section>
+                <section v-else class="teacher-card teacher-empty">Выберите учебный год, чтобы посмотреть нагрузку.</section>
+            </template>
+        </div>
+    </main>
 </template>
 
-<script>
-import { ref, computed, onMounted, watch, inject, h } from "vue";
+<script setup>
+import { computed, inject, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import EditSidebar from "../components/EditSidebar.vue";
-import Table from "../components/ResultTable.vue";
-import { Offcanvas } from "bootstrap";
-import Sidebar from "../components/SideBar.vue";
+import ResultTable from "../components/ResultTable.vue";
+import { buildTeacherRows, reportColumns } from "../utils/teacherReport";
 
-export default {
-    components: {
-        Sidebar,
-        Table,
-        EditSidebar,
-    },
-    setup() {
-        const tableData = ref([]);
-        const sidebar = ref(null);
-        const table = ref(null);
-        const fetchFunction = inject("fetchFunction");
-        const separator = h("hr", {
-            style: {
-                borderColor: "rgba(0, 0, 0, 0.1)",
-                margin: "20px",
-            },
-        });
-        const route = useRoute();
-        const router = useRouter();
-        const dataTable = ref([]);
-        const currentUser = ref(null);
-        const tableArray = ref([]);
-        const isTableVisible = ref(false);
-        const editItem = ref([]);
-        const checkAuth = () => {
-            fetchFunction("/user")
-                .then((response) => response.json())
-                .then((data) => {
-                    console.log(data);
-                    currentUser.value = data;
-                    console.log(currentUser.value.id);
-                    fetchData();
-                });
-        };
-        const getCsrfToken = () => {
-            const metaTag = document.head.querySelector(
-                'meta[name="csrf-token"]'
-            );
-            return metaTag ? metaTag.content : "";
-        };
-        const tableDisplay = (item) => {
-            if (!item || !item.items || typeof item.items !== "object") {
-                console.error("Invalid item structure:", item);
-                return;
-            }
+const route = useRoute();
+const router = useRouter();
+const fetchFunction = inject("fetchFunction");
+const user = ref(null);
+const years = ref([]);
+const loading = ref(true);
+const loadError = ref(false);
+const actionError = ref("");
+const signingOut = ref(false);
+const exporting = ref(false);
+const numberFormat = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 1 });
+const formatNumber = (value) => numberFormat.format(value);
 
-            editItem.value = item;
-            tableArray.value = [];
-            // return;
-            Object.values(editItem.value.items.items).forEach(
-                (halfYear, halfYearIndex) => {
-                    if (!Array.isArray(halfYear.types)) {
-                        console.error("Invalid halfYear structure:", halfYear);
-                        return;
-                    }
-                    tableArray.value.push([
-                        {
-                            name: halfYear.name,
-                            width: 3,
-                            height: 1,
-                            bold: true,
-                            tableStyle: "primary",
-                        },
-                    ]);
-                    halfYear.types.forEach((type) => {
-                        tableArray.value.push([
-                            {
-                                name: type.name,
-                                width: 3,
-                                height: 1,
-                                tableStyle: "active",
-                                isType: true,
-                                bold: true,
-                            },
-                        ]);
+const accountName = computed(() => {
+    if (!user.value) return "";
+    const { lastname, firstname, middlename, login } = user.value;
+    return [lastname, firstname, middlename].filter(Boolean).join(" ") || login;
+});
+const yearOptions = computed(() => years.value.map((year, index) => ({ ...year, index }))
+    .sort((a, b) => b.name.localeCompare(a.name, "ru", { numeric: true })));
+const selectedIndex = computed(() => {
+    const endpoint = route.params.endpoint;
+    if (endpoint == null) return yearOptions.value[0]?.index;
+    return /^\d+$/.test(endpoint) && years.value[Number(endpoint)] ? Number(endpoint) : undefined;
+});
+const selectedYear = computed(() => years.value[selectedIndex.value]);
+const semesters = computed(() => Object.values(selectedYear.value?.items ?? {}));
+const semesterReports = computed(() => semesters.value.map((semester) => ({
+    semester,
+    rows: buildTeacherRows([semester], { compact: true }),
+})));
 
-                        if (!Array.isArray(type.subtypes)) {
-                            console.error("Invalid type structure:", type);
-                            return;
-                        }
+function selectYear(event) {
+    router.push("/teacher/" + event.target.value);
+}
 
-                        type.subtypes.forEach((subtype) => {
-                            tableArray.value.push([
-                                {
-                                    tableStyle: "light",
-                                    name: subtype.name,
-                                    width: 3,
-                                    height: 1,
-                                    isSubtype: true,
-                                    bold: true,
-                                },
-                            ]);
+async function request(url, options) {
+    const response = await fetchFunction(url, options);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.json();
+}
 
-                            if (!Array.isArray(subtype.teacher_loads)) {
-                                console.error(
-                                    "Invalid subtype structure:",
-                                    subtype
-                                );
-                                return;
-                            }
-                            console.log(subtype);
-                            subtype.teacher_loads.forEach((load) => {
-                                console.log(subtype);
-                                const row = new Array(3).fill({
-                                    name: "",
-                                    width: 1,
-                                    height: 1,
-                                });
-                                console.log(halfYearIndex);
-                                if (halfYearIndex === 0) {
-                                    row[0] = {
-                                        name: load.department_load.subject.name,
-                                        width: 1,
-                                        height: 1,
-                                    };
-                                    row[1] = {
-                                        name: load.department_load.group.name,
-                                        width: 1,
-                                        height: 1,
-                                    };
-                                    row[2] = {
-                                        name: load.hours_allocated,
-                                        width: 1,
-                                        height: 1,
-                                    };
-                                } else {
-                                    row[0] = {
-                                        name: load.department_load.subject.name,
-                                        width: 1,
-                                        height: 1,
-                                    };
-                                    row[1] = {
-                                        name: load.department_load.group.name,
-                                        width: 1,
-                                        height: 1,
-                                    };
-                                    row[2] = {
-                                        name: load.hours_allocated,
-                                        width: 1,
-                                        height: 1,
-                                    };
-                                }
-                                tableArray.value.push(row);
-                            });
-                            tableArray.value.push([
-                                {
-                                    name: "Общее кол-во часов:",
-                                    bold: true,
-                                    width: 2,
-                                    height: 1,
-                                    alignment: "end",
-                                    tableStyle: "light",
-                                },
-                                {
-                                    tableStyle: "light",
-                                    name: subtype.total_hours,
-                                    width: 1,
-                                    height: 1,
-                                    bold: true,
-                                },
-                            ]);
-                            tableArray.value.push([
-                                {
-                                    name: "Часов в неделю:",
-                                    bold: true,
-                                    width: 2,
-                                    height: 1,
-                                    alignment: "end",
-                                    tableStyle: "light",
-                                },
-                                {
-                                    tableStyle: "light",
-                                    name: subtype.total_hours_per_week,
-                                    width: 1,
-                                    height: 1,
-                                    bold: true,
-                                },
-                            ]);
-                        });
-                        tableArray.value.push([
-                            {
-                                name: "Общее кол-во часов:",
-                                bold: true,
-                                width: 2,
-                                height: 1,
-                                alignment: "end",
-                                tableStyle: "active",
-                            },
-                            {
-                                name: type.total_hours,
-                                width: 1,
-                                height: 1,
-                                bold: true,
-                                tableStyle: "active",
-                            },
-                        ]);
-                        tableArray.value.push(
-                            [
-                                {
-                                    name: "Часов в неделю:",
-                                    bold: true,
-                                    width: 2,
-                                    height: 1,
-                                    alignment: "end",
-                                    tableStyle: "active",
-                                },
-                                {
-                                    name: type.total_hours_per_week,
-                                    width: 1,
-                                    height: 1,
-                                    bold: true,
-                                    tableStyle: "active",
-                                },
-                            ],
-                            [
-                                {
-                                    name: "",
-                                    bold: true,
-                                    width: 3,
-                                    height: 1,
-                                    alignment: "end",
-                                },
-                            ]
-                        );
-                    });
-                    tableArray.value.push([
-                        {
-                            name: "Общее кол-во часов:",
-                            bold: true,
-                            width: 2,
-                            height: 1,
-                            alignment: "end",
-                            tableStyle: "primary",
-                        },
-                        {
-                            tableStyle: "primary",
-                            name: halfYear.total_hours,
-                            width: 1,
-                            height: 1,
-                            bold: true,
-                        },
-                    ]);
-                    tableArray.value.push(
-                        [
-                            {
-                                name: "Часов в неделю:",
-                                bold: true,
-                                width: 2,
-                                height: 1,
-                                alignment: "end",
-                                tableStyle: "primary",
-                            },
-                            {
-                                tableStyle: "primary",
-                                name: halfYear.total_hours_per_week,
-                                width: 1,
-                                height: 1,
-                                bold: true,
-                            },
-                        ],
-                        [
-                            {
-                                name: "",
-                                bold: true,
-                                width: 3,
-                                height: 1,
-                                alignment: "end",
-                            },
-                        ]
-                    );
-                }
-            );
+async function load() {
+    loading.value = true;
+    loadError.value = false;
+    try {
+        user.value = await request("/user");
+        if (!user.value?.id) throw new Error("User unavailable");
+        years.value = await request("/api/teacher/" + user.value.id);
+    } catch {
+        loadError.value = true;
+    } finally {
+        loading.value = false;
+    }
+}
 
-            isTableVisible.value = true;
-            console.log(tableArray.value);
-        };
+async function downloadReport() {
+    if (exporting.value || !selectedYear.value || !semesters.value.length) return;
+    const rows = buildTeacherRows(semesters.value);
+    const year = selectedYear.value.name;
+    exporting.value = true;
+    actionError.value = "";
+    try {
+        const { createTeacherWorkbook } = await import("../utils/teacherWorkbook");
+        const file = await createTeacherWorkbook(rows, accountName.value);
+        const url = URL.createObjectURL(file);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `Учебная нагрузка ${year}.xlsx`;
+        document.body.append(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch {
+        actionError.value = "Не удалось подготовить Excel-файл. Попробуйте ещё раз.";
+    } finally {
+        exporting.value = false;
+    }
+}
 
-        const sideBarItems = ref([]);
-        const fetchData = () => {
-            fetchFunction("/api/teacher/" + currentUser.value.id)
-                .then((response) => response.json())
-                .then((data) => {
-                    dataTable.value = data;
-                    console.log(data);
-                    let count = 0;
-                    sideBarItems.value = [
-                        {
-                            header: "Редактирование данных",
-                            hiddenOnCollapse: true,
-                        },
-                        ...dataTable.value.map((study_year) => ({
-                            title: study_year.name,
-                            href: "/teacher/" + count++,
-                            items: study_year,
-                        })),
-                        {
-                            component: separator,
-                        },
-                        {
-                            title: "Выйти",
-                            logout: true,
-                        },
-                    ];
-                    // console.log(sideBarItems.value);
-                })
-                .catch((error) => {
-                    console.error("Ошибка при получении данных:", error);
-                });
-        };
+async function logout() {
+    signingOut.value = true;
+    actionError.value = "";
+    try {
+        const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content ?? "";
+        await request("/logout", { method: "POST", headers: { "X-CSRF-TOKEN": csrfToken } });
+        await router.push("/login");
+    } catch {
+        actionError.value = "Не удалось выйти из кабинета. Попробуйте ещё раз.";
+    } finally {
+        signingOut.value = false;
+    }
+}
 
-        const sidebarWidth = computed(() => {
-            if (sidebar.value) {
-                return sidebar.value.$el.clientWidth; // Получаем ширину элемента sidebar
-            }
-            return 0;
-        });
-        const checkAndRedirect = () => {
-            // Проверяем если isTableVisible равно false
-            if (!isTableVisible.value) {
-                // Получаем текущий путь
-                const currentPath = route.path;
-
-                // Проверяем путь на соответствие шаблону
-                const regex = /^\/teacher\/\d+$/;
-                if (regex.test(currentPath)) {
-                    // Выполняем редирект на /assistantDirector
-                    // router.push("/teacher");
-                }
-            }
-        };
-        onMounted(() => {
-            checkAuth();
-            checkAndRedirect();
-        });
-
-        return {
-            dataTable,
-            fetchData,
-            fetchFunction,
-            sideBarItems,
-            tableDisplay,
-            tableData,
-            isTableVisible,
-            tableArray,
-            sidebar,
-            table,
-            sidebarWidth,
-            checkAuth,
-            currentUser,
-            getCsrfToken,
-        };
-    },
-};
+onMounted(load);
 </script>
+
+<style scoped>
+.teacher-page {
+    --teacher-muted: #52627a;
+    --teacher-border: #dbe3ee;
+    min-height: 100vh;
+    padding: clamp(1rem, 4vw, 3.5rem);
+    background: #f3f6fb;
+    color: #17243a;
+}
+
+.teacher-layout {
+    display: grid;
+    gap: 1.15rem;
+    max-width: 94rem;
+    margin-inline: auto;
+}
+
+.teacher-header,
+.teacher-account,
+.teacher-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: .8rem;
+}
+
+.teacher-header h1 {
+    margin: 0;
+    font-size: clamp(1.75rem, 4vw, 2.75rem);
+    font-weight: 750;
+    letter-spacing: -.035em;
+}
+
+.teacher-role {
+    margin: 0 0 .35rem;
+    color: #234fbd;
+    font-weight: 650;
+}
+
+.teacher-card {
+    min-width: 0;
+    border: 1px solid var(--teacher-border);
+    border-radius: 1rem;
+    background: #fff;
+    box-shadow: 0 4px 16px rgb(27 53 94 / 5%);
+}
+
+.teacher-toolbar,
+.teacher-report-header {
+    padding: clamp(1rem, 2.5vw, 1.35rem);
+}
+
+.teacher-toolbar {
+    align-items: flex-end;
+}
+
+.teacher-toolbar .form-select {
+    min-width: 12rem;
+}
+
+.teacher-year-report {
+    display: grid;
+    gap: .85rem;
+}
+
+.teacher-year-report h2,
+.teacher-report h3 {
+    margin: 0;
+    font-size: 1.2rem;
+    font-weight: 700;
+}
+
+.teacher-semesters {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+    gap: 1rem;
+}
+
+.teacher-summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: .35rem .8rem;
+    margin: .35rem 0 0;
+}
+
+.teacher-summary strong {
+    color: #234fbd;
+    font-size: 1.3rem;
+}
+
+.teacher-muted,
+.teacher-summary span {
+    color: var(--teacher-muted);
+}
+
+.teacher-report .table-responsive {
+    border-radius: 0 0 1rem 1rem;
+}
+
+.teacher-report :deep(table) {
+    min-width: 29rem;
+    margin-bottom: 0;
+}
+
+.teacher-empty {
+    padding: clamp(1.5rem, 5vw, 3rem);
+    text-align: center;
+}
+
+@media (max-width: 66rem) {
+    .teacher-semesters {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+</style>

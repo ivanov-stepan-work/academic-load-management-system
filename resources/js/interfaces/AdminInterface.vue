@@ -1,741 +1,616 @@
 <template>
-    <div class="d-flex w-100">
-        <sidebar
-            ref="sidebar"
-            @clearSelectedRow="clearSelectedRow"
-            :items="sideBarItems"
-        />
-        <div class="flex-grow-1" :style="{ marginLeft: sidebarWidth + 'px' }">
-            <Table
-                v-if="checkPath()"
-                ref="table"
-                :columns="getColumnNames()"
-                :rows="filterData"
-                :modalItems="computedData"
-                @rowSelected="editRow"
-                @saves="saveRow"
-            />
-            <EditSidebar
-                ref="editSidebar"
-                :items="selectedRow"
-                @close="clearSelectedRow"
-                @save="updateRow"
-                @delete="deleteRow"
-            />
+    <main class="admin-page">
+        <div class="admin-layout">
+            <header class="admin-header">
+                <div>
+                    <p class="admin-role">Кабинет администратора</p>
+                    <h1>Управление данными</h1>
+                </div>
+                <div class="admin-account">
+                    <strong v-if="accountName">{{ accountName }}</strong>
+                    <button type="button" class="btn btn-outline-secondary" :disabled="saving || signingOut" @click="logout">
+                        {{ signingOut ? "Выход…" : "Выйти" }}
+                    </button>
+                </div>
+            </header>
+
+            <p v-if="notice" class="alert alert-success mb-0" role="status">{{ notice }}</p>
+            <p v-if="actionError" class="alert alert-danger mb-0" role="alert">{{ actionError }}</p>
+
+            <nav class="admin-card admin-nav" aria-label="Разделы управления данными">
+                <RouterLink v-for="(item, key) in sections" :key="key" :to="'/admin/' + key" class="admin-tab">
+                    {{ item.title }}
+                </RouterLink>
+            </nav>
+
+            <section v-if="loading" class="admin-card admin-empty" role="status">Загружаем данные…</section>
+            <section v-else-if="loadError" class="admin-card admin-empty">
+                <p role="alert">Не удалось загрузить данные кабинета.</p>
+                <button type="button" class="btn btn-outline-primary" @click="load">Повторить</button>
+            </section>
+            <section v-else-if="!section" class="admin-card admin-empty">
+                <h2>{{ route.params.endpoint ? "Раздел не найден" : "Выберите раздел" }}</h2>
+            </section>
+            <section v-else class="admin-card admin-detail" aria-labelledby="admin-section-title">
+                <header class="admin-section-header">
+                    <div>
+                        <h2 id="admin-section-title" ref="sectionHeading" tabindex="-1">{{ section.title }}</h2>
+                        <p class="admin-muted mb-0">Записей {{ numberFormat.format(records.length) }}</p>
+                    </div>
+                    <button type="button" class="btn btn-primary" :disabled="working || !!draft || !!deleting"
+                        @click="openEditor(null, $event.currentTarget)">Добавить запись</button>
+                </header>
+
+                <form v-if="draft" class="admin-editor" aria-labelledby="admin-editor-title" @submit.prevent="saveRecord">
+                    <h3 id="admin-editor-title" ref="editorHeading" tabindex="-1">
+                        {{ draft.id == null ? "Добавить запись" : "Редактировать запись" }}
+                    </h3>
+                    <p v-if="operationError" class="alert alert-danger" role="alert">{{ operationError }}</p>
+                    <fieldset :disabled="working">
+                        <div class="admin-fields">
+                            <template v-for="field in visibleFields" :key="field.key">
+                                <fieldset v-if="field.type === 'checkboxes'" class="admin-choices">
+                                    <legend>{{ field.label }}</legend>
+                                    <div v-if="field.options.length" class="admin-choice-list">
+                                        <label v-for="option in field.options" :key="option.id" class="admin-choice">
+                                            <input v-model="draft.values[field.key]" type="checkbox" class="form-check-input" :value="option.id" />
+                                            {{ option.label }}
+                                        </label>
+                                    </div>
+                                    <p v-else class="admin-muted mb-0">Нет доступных вариантов.</p>
+                                </fieldset>
+                                <div v-else>
+                                    <label :for="'admin-' + field.key">{{ field.label }}</label>
+                                    <select v-if="field.type === 'select'" :id="'admin-' + field.key" v-model="draft.values[field.key]"
+                                        class="form-select" :required="field.required">
+                                        <option :value="null" :disabled="field.required">{{ field.required ? "Выберите из списка" : "Не назначен" }}</option>
+                                        <option v-for="option in field.options" :key="option.id" :value="option.id">{{ option.label }}</option>
+                                    </select>
+                                    <input v-else :id="'admin-' + field.key" v-model="draft.values[field.key]" class="form-control"
+                                        :type="field.type ?? 'text'" :required="field.required" :min="field.min"
+                                        :max="field.max" :minlength="field.type === 'password' ? 8 : undefined"
+                                        :autocomplete="field.type === 'password' ? 'new-password' : undefined" />
+                                    <p v-if="field.type === 'password'" class="form-text mb-0">Минимум 8 символов.</p>
+                                </div>
+                            </template>
+                        </div>
+                        <div class="admin-actions">
+                            <button type="button" class="btn btn-outline-secondary" @click="closeAction">Отмена</button>
+                            <button type="submit" class="btn btn-primary">{{ saving ? "Сохраняем…" : "Сохранить" }}</button>
+                        </div>
+                    </fieldset>
+                </form>
+
+                <div v-if="records.length" class="admin-search">
+                    <label for="admin-search">Поиск в разделе</label>
+                    <input id="admin-search" v-model.trim="search" type="search" class="form-control" />
+                </div>
+                <div v-if="visibleRows.length" class="table-responsive" role="region" aria-labelledby="admin-section-title" tabindex="0">
+                    <table class="table admin-table align-middle mb-0">
+                        <thead>
+                            <tr>
+                                <th v-for="[, label] in section.columns" :key="label" scope="col">{{ label }}</th>
+                                <th scope="col"><span class="visually-hidden">Действия</span></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <template v-for="{ id, record, cells } in visibleRows" :key="id">
+                                <tr :class="{ 'table-active': draft?.id === id }">
+                                    <th scope="row">{{ cells[0] || "—" }}</th>
+                                    <td v-for="(cell, index) in cells.slice(1)" :key="index">{{ cell || "—" }}</td>
+                                    <td>
+                                        <div class="admin-row-actions">
+                                            <button type="button" class="btn btn-sm btn-outline-primary" :disabled="working || !!draft || !!deleting"
+                                                @click="openEditor(record, $event.currentTarget)">Изменить</button>
+                                            <button type="button" class="btn btn-sm btn-outline-danger" :disabled="working || !!draft || !!deleting"
+                                                @click="askDelete(id, $event.currentTarget)">Удалить</button>
+                                        </div>
+                                    </td>
+                                </tr>
+                                <tr v-if="deleting?.id === id">
+                                    <td :colspan="section.columns.length + 1">
+                                        <div class="alert alert-danger mb-0">
+                                            <strong>Удалить запись «{{ cells[0] }}»?</strong>
+                                            <p v-if="operationError" class="mb-0 mt-2" role="alert">{{ operationError }}</p>
+                                            <div class="admin-actions">
+                                                <button type="button" class="btn btn-outline-secondary" data-admin-cancel-delete :disabled="working" @click="closeAction">Отмена</button>
+                                                <button type="button" class="btn btn-danger" :disabled="working" @click="deleteRecord">
+                                                    {{ saving ? "Удаляем…" : "Подтвердить удаление" }}
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+                <p v-else class="admin-empty admin-muted mb-0">
+                    {{ records.length ? "По этому запросу ничего не найдено." : "В этом разделе пока нет записей." }}
+                </p>
+            </section>
         </div>
-    </div>
+    </main>
 </template>
 
-<script>
-import { ref, computed, onMounted, watch, inject, h } from "vue";
-import { useRoute } from "vue-router";
-import EditSidebar from "../components/EditSidebar.vue";
-import Table from "../components/Table.vue";
-import { Offcanvas } from "bootstrap";
-import Sidebar from "../components/SideBar.vue";
+<script setup>
+import { computed, inject, nextTick, onMounted, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 
-export default {
-    components: {
-        EditSidebar,
-        Table,
-        Sidebar,
+const nameSection = (title, label) => ({
+    title,
+    columns: [["name", label]],
+    fields: [{ key: "name", label, required: true }],
+});
+
+const sections = {
+    users: {
+        title: "Пользователи",
+        columns: [["login", "Логин"], ["fullName", "ФИО"], ["email", "Почта"], ["roles", "Роли"], ["teacher_statuses", "Статусы"], ["departments", "Кафедры"]],
+        fields: [
+            { key: "login", label: "Логин", required: true },
+            { key: "password", label: "Пароль", type: "password", required: true, createOnly: true },
+            { key: "email", label: "Электронная почта", type: "email" },
+            { key: "lastname", label: "Фамилия" },
+            { key: "firstname", label: "Имя" },
+            { key: "middlename", label: "Отчество" },
+            { key: "roles", label: "Роли", type: "checkboxes", source: "roles" },
+            { key: "teacher_statuses", label: "Статусы преподавателя", type: "checkboxes", source: "teacher_statuses" },
+            { key: "departments", label: "Кафедры", type: "checkboxes", source: "departments" },
+        ],
     },
-    setup() {
-        const selectedRow = ref(null);
-        const fetchFunction = inject("fetchFunction");
-        const separator = h("hr", {
-            style: {
-                borderColor: "rgba(0, 0, 0, 0.1)",
-                margin: "20px",
-            },
-        });
-        // watch(selectedRow, (newValue) => {
-        //     if (newValue) {
-        //         openEditSideBar();
-        //     } else {
-        //         closeEditSidebar();
-        //     }
-        // });
-        const route = useRoute();
-        const dataTable = ref([]);
-
-        const sidebar = ref(null);
-        const table = ref(null);
-        let editSidebar;
-        const isDataFetched = ref(false);
-
-        const columnMappings = {
-            users: [
-                "Логин",
-                "Электронная почта",
-                "Имя",
-                "Фамилия",
-                "Отчество",
-                "Роли",
-                "Статусы",
-                "Кафедры",
-            ],
-            groups: ["Название", "Количество студентов", "Специальность"],
-            departments: ["Название", "ФИО заведующего"],
-            roles: ["Название роли"],
-            specialties: ["Название специальности", "Кафедра"],
-            subtypes: ["Название вида деятельности"],
-            types: ["Название формы обучения"],
-            teacher_statuses: ["Название статуса"],
-            subjects: ["Наименование предмета"],
-            study_years: ["Учебный год"],
-        };
-        const sideBarItems = [
-            {
-                header: "Редактирование данных",
-                hiddenOnCollapse: true,
-            },
-            {
-                title: "Предметы",
-                href: "/admin/subjects",
-            },
-            {
-                title: "Роли",
-                href: "/admin/roles",
-            },
-            {
-                title: "Формы обучения",
-                href: "/admin/types",
-            },
-            {
-                title: "Статусы преподавателя",
-                href: "/admin/teacher_statuses",
-            },
-            {
-                title: "Виды деятельности",
-                href: "/admin/subtypes",
-            },
-            {
-                title: "Учебные года",
-                href: "/admin/study_years",
-            },
-            {
-                title: "Пользователи",
-                href: "/admin/users",
-            },
-            {
-                title: "Кафедры",
-                href: "/admin/departments",
-            },
-            {
-                title: "Специальности",
-                href: "/admin/specialties",
-            },
-            {
-                title: "Группы",
-                href: "/admin/groups",
-            },
-
-            {
-                title: "Выйти",
-                logout: true,
-            },
-            {
-                component: separator,
-            },
-        ];
-
-        const filterData = computed(() => {
-            if (!checkPath()) return [];
-            if (!isDataFetched.value) return [];
-            console.log(dataTable.value);
-            let data = filteredData(
-                dataTable.value[route.params.endpoint],
-                "table"
-            );
-            data.forEach((row) => {
-                if (row.roles) {
-                    row.roles = row.roles.map((role) => role.name).join(", ");
-                }
-                if (row.teacher_statuses)
-                    row.teacher_statuses = row.teacher_statuses
-                        .map((teacherStatus) => teacherStatus.name)
-                        .join(", ");
-                if (row.departments)
-                    row.departments = row.departments
-                        .map((department) => department.name)
-                        .join(", ");
-                if (row.user) {
-                    row.user.lastname == null &&
-                    row.user.firstname == null &&
-                    row.user.middlename == null
-                        ? (row.user = row.user.login)
-                        : (row.user = [
-                              row.user.lastname,
-                              row.user.firstname,
-                              row.user.middlename,
-                          ].join(" "));
-                }
-                if (row.department) row.department = row.department.name;
-                if (row.specialty) row.specialty = row.specialty.name;
-            });
-            return data;
-        });
-        const filteredData = (data, pred) => {
-            return data.map((row) => {
-                let newRow = { ...row };
-                for (let prop in newRow) {
-                    if (
-                        newRow[prop] &&
-                        newRow[prop].label &&
-                        newRow[prop].label.includes(pred)
-                    ) {
-                        newRow[prop] = newRow[prop].value;
-                    } else {
-                        delete newRow[prop];
-                    }
-                }
-                return newRow;
-            });
-        };
-        const fetchData = () => {
-            fetchFunction("/api/admin")
-                .then((response) => response.json())
-                .then((data) => {
-                    dataTable.value = data;
-                    isDataFetched.value = true;
-                    console.log(dataTable.value);
-                })
-                .catch((error) => {
-                    console.error("Ошибка при получении данных:", error);
-                });
-        };
-
-        const getColumnNames = () => {
-            return columnMappings[route.params.endpoint] || [];
-        };
-        const checkPath = () => {
-            return route.params.endpoint !== undefined;
-        };
-        const openEditSideBar = () => {
-            let modalElement = document.getElementById("openEditSideBar");
-            if (!editSidebar) {
-                editSidebar = new Offcanvas(modalElement, {
-                    backdrop: true,
-                });
-
-                modalElement.addEventListener(
-                    "hidden.bs.offcanvas",
-                    function () {
-                        clearSelectedRow();
-                    }
-                );
-            }
-
-            editSidebar.show();
-        };
-        const closeEditSidebar = () => {
-            if (editSidebar) {
-                editSidebar.hide();
-            }
-        };
-        const editRow = (rowIndex) => {
-            let originalRow = dataTable.value[route.params.endpoint][rowIndex];
-            let data;
-            console.log(originalRow);
-            switch (route.params.endpoint) {
-                case "users":
-                    data = [
-                        {
-                            name: "login",
-                            title: "Логин",
-                            value: originalRow.login.value,
-                        },
-                        {
-                            name: "email",
-                            title: "Электронная почта",
-                            value: originalRow.email.value,
-                        },
-                        {
-                            name: "firstname",
-                            title: "Имя",
-                            value: originalRow.firstname.value,
-                        },
-                        {
-                            name: "lastname",
-                            title: "Фамилия",
-                            value: originalRow.lastname.value,
-                        },
-                        {
-                            name: "middlename",
-                            title: "Отчество",
-                            value: originalRow.middlename.value,
-                        },
-                        {
-                            name: "roles",
-                            title: "Роли",
-                            value: dataTable.value.roles.map((role) => ({
-                                ...role,
-                                name: role.name.value,
-                                id: role.id.value,
-                                select: originalRow.roles.value.some(
-                                    (dataRole) => dataRole.id === role.id.value
-                                ),
-                            })),
-                            label: "DLG",
-                        },
-                        {
-                            name: "teacher_statuses",
-                            title: "Статусы преподавателя",
-                            value: dataTable.value.teacher_statuses.map(
-                                (teacherStatus) => ({
-                                    ...teacherStatus,
-                                    name: teacherStatus.name.value,
-                                    id: teacherStatus.id.value,
-                                    select: originalRow.teacher_statuses.value.some(
-                                        (dataTeacherStatus) =>
-                                            dataTeacherStatus.id ===
-                                            teacherStatus.id.value
-                                    ),
-                                })
-                            ),
-
-                            label: "DLG",
-                        },
-                        {
-                            name: "departments",
-                            title: "Кафедры",
-                            value: dataTable.value.departments.map(
-                                (department) => ({
-                                    ...department,
-                                    name: department.name.value,
-                                    id: department.id.value,
-                                    selectedValue: null,
-                                    select: originalRow.departments.value.some(
-                                        (dataDepartment) =>
-                                            dataDepartment.id ===
-                                            department.id.value
-                                    ),
-                                })
-                            ),
-                            label: "DLG",
-                        },
-                    ];
-                    break;
-                case "teacher_statuses":
-                    data = [
-                        {
-                            name: "name",
-                            title: "Название статуса",
-                            value: originalRow.name.value,
-                        },
-                    ];
-                    break;
-                case "types":
-                    data = [
-                        {
-                            name: "name",
-                            title: "Название типа",
-                            value: originalRow.name.value,
-                        },
-                    ];
-                    break;
-                case "subjects":
-                    data = [
-                        {
-                            name: "name",
-                            title: "Название предмета",
-                            value: originalRow.name.value,
-                        },
-                    ];
-                    break;
-                case "subtypes":
-                    data = [
-                        {
-                            name: "name",
-                            title: "Название вида деятельности",
-                            value: originalRow.name.value,
-                        },
-                    ];
-                    break;
-                case "study_years":
-                    data = [
-                        {
-                            name: "start_year",
-                            label: "number",
-                            title: "Год начала учебного года",
-                            value: originalRow.start_year.value,
-                        },
-                        {
-                            name: "end_year",
-                            label: "number",
-                            title: "Год конца учебного года",
-                            value: originalRow.end_year.value,
-                        },
-                    ];
-                    break;
-                case "roles":
-                    data = [
-                        {
-                            name: "name",
-                            title: "Название роли",
-                            value: originalRow.name.value,
-                        },
-                    ];
-                    break;
-                case "departments":
-                    data = [
-                        {
-                            name: "name",
-                            title: "Наименование кафедры",
-                            value: originalRow.name.value,
-                        },
-                        {
-                            name: "user_id",
-                            title: "Заведующий кафедрой",
-                            value: dataTable.value.users
-                                .filter((user) => user.roles.value[0].id == 3)
-                                .map((user) => ({
-                                    ...user,
-                                    name:
-                                        user.lastname.value == null &&
-                                        user.firstname.value == null &&
-                                        user.middlename.value == null
-                                            ? user.login.value
-                                            : (user.lastname.value != null
-                                                  ? user.lastname.value + " "
-                                                  : "") +
-                                              (user.firstname.value != null
-                                                  ? user.firstname.value + " "
-                                                  : "") +
-                                              (user.middlename.value != null
-                                                  ? user.middlename.value
-                                                  : ""),
-                                    id: user.id.value,
-                                    select:
-                                        originalRow.user.value &&
-                                        originalRow.user.value.id ===
-                                            user.id.value,
-                                })),
-                            label: "select",
-                        },
-                    ];
-                    break;
-                case "specialties":
-                    data = [
-                        {
-                            name: "name",
-                            title: "Наименование специальности",
-                            value: originalRow.name.value,
-                        },
-                        {
-                            name: "department_id",
-                            title: "Кафедра",
-                            value: dataTable.value.departments.map(
-                                (department) => ({
-                                    ...department,
-                                    name: department.name.value,
-                                    id: department.id.value,
-                                    select:
-                                        originalRow.department.value.id ===
-                                        department.id.value,
-                                })
-                            ),
-                            label: "select",
-                        },
-                    ];
-                    break;
-                case "groups":
-                    data = [
-                        {
-                            name: "name",
-                            title: "Наименование группы",
-                            value: originalRow.name.value,
-                        },
-                        {
-                            name: "student_count",
-                            label: "number",
-                            title: "Количество студентов",
-                            value: originalRow.student_count.value,
-                            min: 1,
-                            max: 1000,
-                        },
-                        {
-                            name: "specialty_id",
-                            title: "Специальность",
-                            value: dataTable.value.specialties.map(
-                                (specialty) => ({
-                                    ...specialty,
-                                    name: specialty.name.value,
-                                    id: specialty.id.value,
-                                    select:
-                                        originalRow.specialty.value.id ===
-                                        specialty.id.value,
-                                })
-                            ),
-                            label: "select",
-                        },
-                    ];
-                    break;
-                default:
-                    break;
-            }
-            if (originalRow) {
-                selectedRow.value = [
-                    { name: "id", value: originalRow.id.value },
-                    ...data,
-                ];
-                openEditSideBar();
-            }
-        };
-
-        const updateRow = (updatedRow) => {
-            const index = dataTable.value[route.params.endpoint].findIndex(
-                (row) => row.id.value === updatedRow.id.value
-            );
-            if (index !== -1) {
-                dataTable.value[route.params.endpoint].splice(
-                    index,
-                    1,
-                    updatedRow
-                );
-            }
-            clearSelectedRow();
-        };
-        const deleteRow = (idRow) => {
-            const index = dataTable.value[route.params.endpoint].findIndex(
-                (row) => row.id.value === idRow
-            );
-            if (index !== -1) {
-                dataTable.value[route.params.endpoint].splice(index, 1);
-            }
-            clearSelectedRow();
-        };
-        const saveRow = (newRow) => {
-            fetchFunction(`/api/${route.params.endpoint}`, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                },
-                body: JSON.stringify(newRow),
-            })
-                .then((response) => response.json())
-                .then((data) => {
-                    console.log("Данные с сервера: ");
-                    console.log(data);
-                    dataTable.value[route.params.endpoint].push(newRow);
-                    fetchData();
-                })
-                .catch((error) => {
-                    console.error("Ошибка при обновлении данных:", error);
-                });
-        };
-
-        const clearSelectedRow = () => {
-            selectedRow.value = [];
-            if (table.value) {
-                table.value.clearSelection();
-            }
-            closeEditSidebar();
-        };
-        onMounted(() => {
-            fetchData();
-        });
-        const computedData = computed(() => {
-            console.log(dataTable.value.users);
-            return isDataFetched.value
-                ? {
-                      users: [
-                          { name: "login", title: "Логин", value: "" },
-                          { name: "password", title: "Пароль", value: "" },
-                          {
-                              name: "email",
-                              title: "Электронная почта",
-                              value: "",
-                          },
-                          { name: "firstname", title: "Имя", value: "" },
-                          { name: "lastname", title: "Фамилия", value: "" },
-                          { name: "middlename", title: "Отчество", value: "" },
-                          {
-                              name: "roles",
-                              title: "Роли",
-                              value: dataTable.value.roles.map((role) => ({
-                                  ...role,
-                                  name: role.name.value,
-                                  id: role.id.value,
-                              })),
-                              label: "DLG",
-                          },
-                          {
-                              name: "teacher_statuses",
-                              title: "Статусы преподавателя",
-                              value: dataTable.value.teacher_statuses.map(
-                                  (teacherStatus) => ({
-                                      ...teacherStatus,
-                                      name: teacherStatus.name.value,
-                                      id: teacherStatus.id.value,
-                                  })
-                              ),
-
-                              label: "DLG",
-                          },
-                          {
-                              name: "departments",
-                              title: "Кафедры",
-                              value: dataTable.value.departments.map(
-                                  (department) => ({
-                                      ...department,
-                                      name: department.name.value,
-                                      id: department.id.value,
-                                  })
-                              ),
-                              label: "DLG",
-                          },
-                      ],
-                      teacher_statuses: [
-                          {
-                              name: "name",
-                              title: "Название статуса",
-                              value: "",
-                          },
-                      ],
-                      types: [
-                          { name: "name", title: "Название типа", value: "" },
-                      ],
-                      subjects: [
-                          {
-                              name: "name",
-                              title: "Название предмета",
-                              value: "",
-                          },
-                      ],
-                      subtypes: [
-                          {
-                              name: "name",
-                              title: "Название вида деятельности",
-                              value: "",
-                          },
-                      ],
-                      study_years: [
-                          {
-                              name: "start_year",
-                              label: "number",
-                              title: "Год начала учебного года",
-                              value: "",
-                          },
-                          {
-                              name: "end_year",
-                              label: "number",
-                              title: "Год конца учебного года",
-                              value: "",
-                          },
-                      ],
-                      roles: [
-                          { name: "name", title: "Название роли", value: "" },
-                      ],
-                      departments: [
-                          {
-                              name: "name",
-                              title: "Наименование кафедры",
-                              value: "",
-                          },
-                          {
-                              name: "user_id",
-                              title: "Заведующий кафедрой",
-                              value: dataTable.value.users
-                                  .filter((user) => user.roles.value[0].id == 3)
-                                  .map((user) => ({
-                                      ...user,
-                                      name:
-                                          user.lastname.value == null &&
-                                          user.firstname.value == null &&
-                                          user.middlename.value == null
-                                              ? user.login.value
-                                              : (user.lastname.value != null
-                                                    ? user.lastname.value + " "
-                                                    : "") +
-                                                (user.firstname.value != null
-                                                    ? user.firstname.value + " "
-                                                    : "") +
-                                                (user.middlename.value != null
-                                                    ? user.middlename.value
-                                                    : ""),
-                                      id: user.id.value,
-                                  })),
-                              label: "select",
-                          },
-                      ],
-                      specialties: [
-                          {
-                              name: "name",
-                              title: "Наименование специальности",
-                              value: "",
-                          },
-                          {
-                              name: "department_id",
-                              title: "Кафедра",
-                              value: dataTable.value.departments.map(
-                                  (department) => ({
-                                      ...department,
-                                      name: department.name.value,
-                                      id: department.id.value,
-                                  })
-                              ),
-                              label: "select",
-                          },
-                      ],
-                      groups: [
-                          {
-                              name: "name",
-                              title: "Наименование группы",
-                              value: "",
-                          },
-                          {
-                              name: "student_count",
-                              title: "Количество студентов",
-                              value: "",
-                              label: "number",
-                              min: 1,
-                              max: 1000,
-                          },
-                          {
-                              name: "specialty_id",
-                              title: "Специальность",
-                              value: dataTable.value.specialties.map(
-                                  (specialty) => ({
-                                      ...specialty,
-                                      name: specialty.name.value,
-                                      id: specialty.id.value,
-                                  })
-                              ),
-                              label: "select",
-                          },
-                      ],
-                  }
-                : [];
-        });
-        const sidebarWidth = computed(() => {
-            if (sidebar.value) {
-                return sidebar.value.$el.clientWidth; // Получаем ширину элемента sidebar
-            }
-            return 0;
-        });
-        return {
-            dataTable,
-            selectedRow,
-            filterData,
-            fetchData,
-            getColumnNames,
-            editRow,
-            updateRow,
-            clearSelectedRow,
-            sidebar,
-            table,
-            sidebarWidth,
-            saveRow,
-            deleteRow,
-            fetchFunction,
-            computedData,
-            sideBarItems,
-            openEditSideBar,
-            editSidebar,
-            checkPath,
-        };
+    departments: {
+        title: "Кафедры",
+        columns: [["name", "Название"], ["user", "Заведующий кафедрой"]],
+        fields: [
+            { key: "name", label: "Название кафедры", required: true },
+            { key: "user_id", label: "Заведующий кафедрой", type: "select", source: "users", relation: "user" },
+        ],
     },
+    specialties: {
+        title: "Специальности",
+        columns: [["name", "Название"], ["department", "Кафедра"]],
+        fields: [
+            { key: "name", label: "Название специальности", required: true },
+            { key: "department_id", label: "Кафедра", type: "select", source: "departments", relation: "department", required: true },
+        ],
+    },
+    groups: {
+        title: "Группы",
+        columns: [["name", "Название"], ["student_count", "Студентов"], ["specialty", "Специальность"]],
+        fields: [
+            { key: "name", label: "Название группы", required: true },
+            { key: "student_count", label: "Количество студентов", type: "number", min: 1, max: 1000, required: true },
+            { key: "specialty_id", label: "Специальность", type: "select", source: "specialties", relation: "specialty", required: true },
+        ],
+    },
+    subjects: nameSection("Предметы", "Название предмета"),
+    study_years: {
+        title: "Учебные годы",
+        columns: [["name", "Учебный год"]],
+        fields: [
+            { key: "start_year", label: "Год начала", type: "number", required: true },
+            { key: "end_year", label: "Год окончания", type: "number", required: true },
+        ],
+    },
+    types: nameSection("Формы обучения", "Название формы обучения"),
+    subtypes: nameSection("Виды деятельности", "Название вида деятельности"),
+    teacher_statuses: nameSection("Статусы преподавателей", "Название статуса"),
 };
+
+const route = useRoute();
+const router = useRouter();
+const fetchFunction = inject("fetchFunction");
+const numberFormat = new Intl.NumberFormat("ru-RU");
+const data = ref({});
+const user = ref(null);
+const loading = ref(true);
+const loadError = ref(false);
+const saving = ref(false);
+const signingOut = ref(false);
+const search = ref("");
+const notice = ref("");
+const actionError = ref("");
+const operationError = ref("");
+const draft = ref(null);
+const deleting = ref(null);
+const sectionHeading = ref(null);
+const editorHeading = ref(null);
+let actionTrigger;
+
+const wrappedValue = (record, key) => record?.[key]?.value;
+const fullName = (person) => [person.lastname, person.firstname, person.middlename].filter(Boolean).join(" ");
+const formattedName = (record) => fullName({
+    lastname: wrappedValue(record, "lastname"),
+    firstname: wrappedValue(record, "firstname"),
+    middlename: wrappedValue(record, "middlename"),
+});
+const accountName = computed(() => {
+    if (!user.value) return "";
+    const account = data.value.users?.find((item) => wrappedValue(item, "id") === user.value.id);
+    return account
+        ? formattedName(account) || wrappedValue(account, "login")
+        : fullName(user.value) || user.value.login;
+});
+const endpoint = computed(() => route.params.endpoint);
+const section = computed(() => Object.hasOwn(sections, endpoint.value) ? sections[endpoint.value] : null);
+const records = computed(() => section.value ? data.value[endpoint.value] ?? [] : []);
+const working = computed(() => saving.value || signingOut.value);
+
+function cellText(record, key) {
+    if (key === "fullName") return formattedName(record);
+    const value = wrappedValue(record, key);
+    if (Array.isArray(value)) return value.map((item) => item.name).join(", ");
+    if (key === "user" && value) return fullName(value) || value.login;
+    return String(value?.name ?? value ?? "");
+}
+
+const visibleRows = computed(() => {
+    const query = search.value.toLocaleLowerCase("ru-RU");
+    return records.value.map((record) => ({
+        id: wrappedValue(record, "id"),
+        record,
+        cells: section.value.columns.map(([key]) => cellText(record, key)),
+    })).filter(({ id, cells }) => id === deleting.value?.id ||
+        cells.some((cell) => cell.toLocaleLowerCase("ru-RU").includes(query)));
+});
+
+function fieldOptions(field) {
+    const options = data.value[field.source] ?? [];
+    if (field.source !== "users") {
+        return options.map((item) => ({ id: wrappedValue(item, "id"), label: wrappedValue(item, "name") }));
+    }
+    const currentId = draft.value?.values[field.key];
+    return options.filter((item) => wrappedValue(item, "id") === currentId ||
+        wrappedValue(item, "roles")?.some((role) => Number(role.id) === 3))
+        .map((item) => ({ id: wrappedValue(item, "id"), label: formattedName(item) || wrappedValue(item, "login") }));
+}
+
+const visibleFields = computed(() => (section.value?.fields ?? [])
+    .filter((field) => !field.createOnly || draft.value?.id == null)
+    .map((field) => field.source ? { ...field, options: fieldOptions(field) } : field));
+
+async function request(url, method = "GET", payload) {
+    const headers = { Accept: "application/json" };
+    if (method !== "GET") headers["X-CSRF-TOKEN"] = document.querySelector('meta[name="csrf-token"]')?.content ?? "";
+    if (payload) headers["Content-Type"] = "application/json";
+    const response = await fetchFunction(url, { method, headers, body: payload ? JSON.stringify(payload) : undefined });
+    if (!response.ok) {
+        const error = new Error(`HTTP ${response.status}`);
+        error.status = response.status;
+        throw error;
+    }
+    return response.status === 204 ? null : response.json();
+}
+
+async function load() {
+    loading.value = true;
+    loadError.value = false;
+    try {
+        if (!user.value) user.value = await request("/user");
+        if (!user.value?.id) throw new Error("User unavailable");
+        data.value = await request("/api/admin");
+    } catch {
+        loadError.value = true;
+    } finally {
+        loading.value = false;
+    }
+}
+
+async function openEditor(record, trigger) {
+    const id = wrappedValue(record, "id") ?? null;
+    const values = {};
+    for (const field of section.value.fields) {
+        if (field.createOnly && id != null) continue;
+        const value = wrappedValue(record, field.relation ?? field.key);
+        if (field.type === "checkboxes") values[field.key] = (value ?? []).map((item) => item.id);
+        else if (field.type === "select") values[field.key] = value?.id ?? null;
+        else values[field.key] = value ?? "";
+    }
+    notice.value = "";
+    operationError.value = "";
+    actionTrigger = trigger;
+    draft.value = { id, endpoint: endpoint.value, values };
+    await nextTick();
+    editorHeading.value?.focus();
+}
+
+async function askDelete(id, trigger) {
+    notice.value = "";
+    operationError.value = "";
+    actionTrigger = trigger;
+    deleting.value = { id, endpoint: endpoint.value };
+    await nextTick();
+    document.querySelector("[data-admin-cancel-delete]")?.focus();
+}
+
+async function closeAction() {
+    draft.value = null;
+    deleting.value = null;
+    const trigger = actionTrigger;
+    actionTrigger = null;
+    await nextTick();
+    if (trigger?.isConnected && !trigger.disabled) trigger.focus();
+    else sectionHeading.value?.focus();
+}
+
+async function applyChange(url, method, payload, successMessage) {
+    if (working.value) return;
+    const origin = endpoint.value;
+    saving.value = true;
+    operationError.value = "";
+    actionError.value = "";
+    try {
+        await request(url, method, payload);
+        notice.value = successMessage;
+        try {
+            data.value = await request("/api/admin");
+        } catch {
+            loadError.value = true;
+        }
+        saving.value = false;
+        if (endpoint.value === origin) await closeAction();
+    } catch (error) {
+        const message = error.status === 422
+            ? "Сервер отклонил данные. Проверьте заполнение и уникальность значений."
+            : method === "DELETE"
+                ? "Не удалось удалить запись. Проверьте связанные данные."
+                : "Не удалось сохранить запись. Повторите попытку.";
+        if (endpoint.value === origin) operationError.value = message;
+        else actionError.value = message;
+    } finally {
+        saving.value = false;
+    }
+}
+
+function saveRecord() {
+    if (!draft.value) return;
+    const { id, endpoint, values } = draft.value;
+    const url = "/api/" + endpoint;
+    if (id == null) return applyChange(url, "POST", values, "Запись добавлена.");
+    return applyChange(url + "/" + id, "PUT", values, "Изменения сохранены.");
+}
+
+function deleteRecord() {
+    if (!deleting.value) return;
+    const { id, endpoint } = deleting.value;
+    return applyChange("/api/" + endpoint + "/" + id, "DELETE", undefined, "Запись удалена.");
+}
+
+async function logout() {
+    if (working.value) return;
+    signingOut.value = true;
+    actionError.value = "";
+    try {
+        await request("/logout", "POST");
+        await router.push("/login");
+    } catch {
+        actionError.value = "Не удалось выйти из кабинета. Повторите попытку.";
+    } finally {
+        signingOut.value = false;
+    }
+}
+
+watch(endpoint, () => {
+    draft.value = null;
+    deleting.value = null;
+    actionTrigger = null;
+    search.value = "";
+    notice.value = "";
+});
+onMounted(load);
 </script>
+
+<style scoped>
+.admin-page {
+    --admin-text: #17243a;
+    --admin-muted: #52627a;
+    --admin-accent: #234fbd;
+    --admin-border: #dbe3ee;
+    min-height: 100vh;
+    padding: clamp(1rem, 4vw, 3.5rem);
+    background: #f3f6fb;
+    color: var(--admin-text);
+}
+
+.admin-layout {
+    display: grid;
+    gap: 1.2rem;
+    max-width: 84rem;
+    margin-inline: auto;
+}
+
+.admin-header,
+.admin-account,
+.admin-section-header,
+.admin-nav,
+.admin-actions,
+.admin-row-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: .65rem;
+}
+
+.admin-header,
+.admin-section-header {
+    justify-content: space-between;
+}
+
+.admin-header h1 {
+    margin: 0;
+    font-size: clamp(1.75rem, 4vw, 2.75rem);
+    font-weight: 750;
+    letter-spacing: -.035em;
+}
+
+.admin-role {
+    margin: 0 0 .35rem;
+    color: var(--admin-accent);
+    font-weight: 650;
+}
+
+.admin-card {
+    min-width: 0;
+    border: 1px solid var(--admin-border);
+    border-radius: 1rem;
+    background: #fff;
+    box-shadow: 0 4px 16px rgb(27 53 94 / 5%);
+}
+
+.admin-nav,
+.admin-section-header {
+    padding: 1rem 1.2rem;
+}
+
+.admin-nav {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+}
+
+.admin-tab:first-child {
+    margin-inline-start: auto;
+}
+
+.admin-tab:last-child {
+    margin-inline-end: auto;
+}
+
+.admin-tab {
+    flex: 0 0 auto;
+    padding: .5rem .75rem;
+    border: 1px solid var(--admin-border);
+    border-radius: .55rem;
+    color: var(--admin-text);
+    text-decoration: none;
+    white-space: nowrap;
+}
+
+.admin-tab:hover,
+.admin-tab[aria-current="page"] {
+    border-color: #b4c8ed;
+    background: #eef3fc;
+    color: var(--admin-accent);
+}
+
+.admin-tab[aria-current="page"] {
+    border-color: var(--admin-accent);
+}
+
+.admin-card h2,
+.admin-card h3 {
+    margin: 0 0 .35rem;
+    font-size: 1.2rem;
+    font-weight: 700;
+}
+
+.admin-empty {
+    padding: clamp(1.25rem, 5vw, 3rem);
+    text-align: center;
+}
+
+.admin-muted {
+    color: var(--admin-muted);
+}
+
+.admin-editor,
+.admin-search {
+    margin: 0 1.2rem 1rem;
+}
+
+.admin-editor {
+    padding: 1rem;
+    border: 1px solid #bacbec;
+    border-radius: .75rem;
+    background: #f5f8ff;
+}
+
+.admin-editor h3 {
+    margin-bottom: 1rem;
+}
+
+.admin-fields {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr));
+    gap: .85rem;
+}
+
+.admin-fields > div > label,
+.admin-search label,
+.admin-choices legend {
+    display: block;
+    margin-bottom: .35rem;
+    font-size: .9rem;
+    font-weight: 650;
+}
+
+.admin-choices {
+    min-width: 0;
+}
+
+.admin-choice-list {
+    max-height: 12rem;
+    overflow-y: auto;
+    padding: .5rem .7rem;
+    border: 1px solid var(--admin-border);
+    border-radius: .5rem;
+    background: #fff;
+}
+
+.admin-choice {
+    display: flex;
+    align-items: baseline;
+    gap: .55rem;
+    padding-block: .25rem;
+    overflow-wrap: anywhere;
+}
+
+.admin-choice input {
+    flex-shrink: 0;
+}
+
+.admin-search {
+    max-width: 24rem;
+}
+
+.admin-actions,
+.admin-row-actions {
+    justify-content: flex-end;
+}
+
+.admin-actions {
+    margin-top: .8rem;
+}
+
+.admin-detail .table-responsive {
+    border-radius: 0 0 1rem 1rem;
+}
+
+.admin-table {
+    min-width: 31rem;
+    --bs-table-border-color: var(--admin-border);
+}
+
+.admin-table > :not(caption) > * > * {
+    padding: .7rem .85rem;
+    overflow-wrap: anywhere;
+}
+
+.admin-table thead th {
+    background: #f5f7fb;
+    color: var(--admin-muted);
+    font-size: .875rem;
+}
+
+.admin-table tbody th {
+    font-weight: 650;
+}
+
+.admin-table td:last-child {
+    min-width: 11rem;
+}
+
+.admin-table tbody tr:last-child > * {
+    border-bottom: 0;
+}
+</style>

@@ -1,14 +1,22 @@
 <template>
-    <table class="table text-center table-bordered">
+    <table class="teacher-results">
         <thead>
             <tr>
-                <th style="width: 60%">Предмет</th>
-                <th style="width: 30%">Группа</th>
-                <th style="width: 10%">Часы</th>
+                <th v-for="column in columns" :key="column.label" scope="col" :style="{ width: column.percent + '%' }">
+                    {{ column.label }}
+                </th>
             </tr>
         </thead>
         <tbody>
-            <tr v-for="(row, index) in rows" :key="index">
+            <tr v-for="(row, index) in rows" :key="index"
+                :class="[
+                    row[0]?.tableStyle && 'report-' + row[0].tableStyle,
+                    {
+                        'report-heading': row[0]?.width === 3 && row[0].bold,
+                        'report-total': row[0]?.width === 2,
+                        'report-gap': row[0]?.width === 3 && row[0].name === '',
+                    },
+                ]">
                 <td
                     v-for="(cell, cellIndex) in row"
                     :key="cellIndex"
@@ -16,7 +24,6 @@
                     :rowspan="cell.height"
                     :class="{
                         'fw-bold': cell.bold,
-                        ['table-' + cell.tableStyle]: cell.tableStyle,
                         ['text-' + cell.alignment]: cell.alignment,
                     }"
                 >
@@ -28,15 +35,78 @@
 </template>
 
 <script>
+import { reportColumns } from "../utils/teacherReport";
+
 export default {
     props: {
+        columns: {
+            type: Array,
+            default: () => reportColumns,
+        },
         rows: {
             type: Array,
             required: true,
         },
     },
-    methods: {
-        // Другие методы компонента
-    },
 };
 </script>
+
+<style scoped>
+.teacher-results {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    color: #17243a;
+}
+
+.teacher-results th,
+.teacher-results td {
+    padding: .65rem clamp(.75rem, 2vw, 1.2rem);
+    border-bottom: 1px solid #e8edf5;
+    overflow-wrap: anywhere;
+}
+
+.teacher-results thead th {
+    background: #f6f8fc;
+    color: #52627a;
+    font-size: .875rem;
+    text-align: start;
+}
+
+.teacher-results thead th:last-child,
+.teacher-results td:last-child:not([colspan="3"]) {
+    text-align: end;
+    font-variant-numeric: tabular-nums;
+}
+
+.report-heading.report-active,
+.report-total.report-active {
+    background: #f1f4f9;
+}
+
+.report-heading.report-light {
+    background: #f8fafd;
+    color: #465872;
+}
+
+.report-heading.report-light td {
+    padding-inline-start: clamp(1rem, 3vw, 1.8rem);
+}
+
+.report-total {
+    color: #465872;
+    font-size: .875rem;
+}
+
+.report-total.report-light {
+    background: #fbfcfe;
+}
+
+.teacher-results .report-gap td {
+    padding: .2rem;
+}
+
+.teacher-results tbody tr:last-child td {
+    border-bottom: 0;
+}
+</style>
