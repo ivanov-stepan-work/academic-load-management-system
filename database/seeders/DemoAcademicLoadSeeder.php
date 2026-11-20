@@ -26,10 +26,9 @@ class DemoAcademicLoadSeeder extends Seeder
                 }
             }
 
-            $adminPassword = Hash::make('VBctIHbk');
             $demoPassword = Hash::make('password');
             foreach ($data['users'] as &$user) {
-                $user['password'] = $user['login'] === 'admin' ? $adminPassword : $demoPassword;
+                $user['password'] = $demoPassword;
             }
             unset($user);
 
